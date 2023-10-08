@@ -56,7 +56,7 @@ class AioKafkaEngine:
 
         async for message in self.consumer:
             value = message.value
-            self.receive_queue.put_nowait(value)
+            self.receive_queue.put(value)
     
     @retry_on_exception(max_retries=3, retry_interval=5)
     async def produce_messages(self):
