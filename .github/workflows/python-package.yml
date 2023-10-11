@@ -20,9 +20,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up Docker Compose
-        uses: docker/setup-action@v1
-
       - name: Start Kafka with Docker Compose
         run: docker-compose -f docker-compose.yml up -d
 
