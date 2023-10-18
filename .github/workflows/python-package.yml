@@ -47,7 +47,7 @@ jobs:
           pytest
   
   deploy:
-    depends_on: build
+    needs: build
     runs-on: [self-hosted, "hetzner"]
     steps:
       - name: Checkout Code
