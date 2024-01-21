@@ -1,98 +1,154 @@
 import asyncio
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-from asyncio import Queue
+import functools
 import json
 import logging
+import time
+import traceback
+from asyncio import Event, Queue
+
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
 logger = logging.getLogger(__name__)
 
 
-def retry_on_exception(max_retries=3, retry_interval=5):
-    def decorator(func):
-        async def wrapper(*args, **kwargs):
-            retries = 0
-            while retries < max_retries:
+def print_traceback(_, error):
+    error_type = type(error)
+    logger.error(
+        {
+            "error_type": error_type.__name__,
+            "error": error,
+        }
+    )
+    tb_str = traceback.format_exc()
+    logger.error(f"{error}, \n{tb_str}")
+
+
+def retry(max_retries=3, retry_delay=5, on_retry=None, on_failure=None):
+    def wrapper(func):
+        @functools.wraps(func)
+        async def wrapped(*args, **kwargs):
+            retry_count = 0
+
+            while retry_count < max_retries:
                 try:
-                    await func(*args, **kwargs)
-                    return wrapper
+                    return await func(*args, **kwargs)
                 except Exception as e:
+                    if on_retry:
+                        on_retry(retry_count, e)
+
+                    retry_count += 1
                     logger.error(f"Error: {e}")
-                    await asyncio.sleep(retry_interval)
-                retries += 1
+                    logger.info(f"Retrying ({retry_count}/{max_retries})...")
+                    await asyncio.sleep(retry_delay)  # Add a delay before retrying
 
-        return wrapper
+            if on_failure:
+                on_failure(retry_count)
 
-    return decorator
+            raise RuntimeError(f"Failed after {max_retries} retries")
 
-
-def async_background_task(func):
-    async def wrapper(*args, **kwargs):
-        task = asyncio.ensure_future(func(*args, **kwargs))
-        return task
+        return wrapped
 
     return wrapper
 
 
-class AioKafkaEngine:
-    consumer = None
-    producer = None
+def log_speed(
+    counter: int, start_time: float, _queue: Queue, topic: str, interval: int = 15
+) -> tuple[float, int]:
+    # Calculate the time elapsed since the function started
+    delta_time = time.time() - start_time
 
-    def __init__(
-        self,
-        bootstrap_servers: list[str],
-        topic: str,
-        send_queue_size: int = 100,
-        receive_queue_size: int = 100,
-    ):
-        self.bootstrap_servers = bootstrap_servers
-        self.topic = topic
-        self.receive_queue = Queue(maxsize=receive_queue_size)
-        self.send_queue = Queue(maxsize=send_queue_size)
+    # Check if the specified interval has not elapsed yet
+    if delta_time < interval:
+        # Return the original start time and the current counter value
+        return start_time, counter
 
-    async def start_consumer(self, group_id: str) -> Queue:
-        self.consumer = AIOKafkaConsumer(
-            self.topic,
-            bootstrap_servers=self.bootstrap_servers,
-            group_id=group_id,
-            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+    # Calculate the processing speed (messages per second)
+    speed = counter / delta_time
+
+    # Log the processing speed and relevant information
+    log_message = (
+        f"{topic=}, qsize={_queue.qsize()}, "
+        f"processed {counter} in {delta_time:.2f} seconds, {speed:.2f} msg/sec"
+    )
+    logger.info(log_message)
+
+    # Return the current time and reset the counter to zero
+    return time.time(), 0
+
+
+@retry(max_retries=3, retry_delay=5, on_failure=print_traceback)
+async def kafka_consumer(topic: str, group: str, bootstrap_servers: list[str]):
+    logger.info(f"Starting consumer, {topic=}, {group=}")
+
+    consumer = AIOKafkaConsumer(
+        topic,
+        bootstrap_servers=bootstrap_servers,
+        group_id=group,
+        value_deserializer=lambda x: json.loads(x.decode("utf-8")),
+        auto_offset_reset="earliest",
+    )
+    await consumer.start()
+    logger.info("Started")
+    return consumer
+
+
+@retry(max_retries=3, retry_delay=5, on_failure=print_traceback)
+async def kafka_producer(bootstrap_servers: list[str]):
+    logger.info(f"Starting producer")
+
+    producer = AIOKafkaProducer(
+        bootstrap_servers=bootstrap_servers,
+        value_serializer=lambda v: json.dumps(v).encode(),
+        acks="all",
+    )
+    await producer.start()
+    logger.info("Started")
+    return producer
+
+
+@retry(max_retries=3, retry_delay=5, on_failure=print_traceback)
+async def receive_messages(
+    consumer: AIOKafkaConsumer,
+    receive_queue: Queue,
+    shutdown_event: Event,
+    batch_size: int = 200,
+):
+    while not shutdown_event.is_set():
+        batch = await consumer.getmany(timeout_ms=1000, max_records=batch_size)
+        for tp, messages in batch.items():
+            logger.info(f"Partition {tp}: {len(messages)} messages")
+            await asyncio.gather(*[receive_queue.put(m.value) for m in messages])
+            logger.info("done")
+            await consumer.commit()
+
+    logger.info("shutdown")
+
+
+@retry(max_retries=3, retry_delay=5, on_failure=print_traceback)
+async def send_messages(
+    topic: str,
+    producer: AIOKafkaProducer,
+    send_queue: Queue,
+    shutdown_event: Event,
+):
+    start_time = time.time()
+    messages_sent = 0
+
+    while not shutdown_event.is_set():
+        start_time, messages_sent = log_speed(
+            counter=messages_sent,
+            start_time=start_time,
+            _queue=send_queue,
+            topic=topic,
         )
-        await self.consumer.start()
+        if send_queue.empty():
+            await asyncio.sleep(1)
+            continue
 
-    async def start_producer(self):
-        self.producer = AIOKafkaProducer(
-            bootstrap_servers=self.bootstrap_servers,
-            value_serializer=lambda v: json.dumps(v).encode(),
-        )
-        await self.producer.start()
+        message = await send_queue.get()
+        await producer.send(topic, value=message)
+        send_queue.task_done()
 
-    @async_background_task
-    @retry_on_exception()
-    async def consume_messages(self):
-        if self.consumer is None:
-            raise ValueError("Consumer not started. Call start_consumer() first.")
+        messages_sent += 1
 
-        async for message in self.consumer:
-            value = message.value
-            await self.receive_queue.put(value)
-
-    @async_background_task
-    @retry_on_exception()
-    async def produce_messages(self):
-        if self.producer is None:
-            raise ValueError("Producer not started. Call start_producer() first.")
-
-        while True:
-            message = await self.send_queue.get()
-            await self.producer.send(self.topic, value=message)
-            self.send_queue.task_done()
-
-    async def stop_consumer(self):
-        if self.consumer:
-            await self.consumer.stop()
-
-    async def stop_producer(self):
-        if self.producer:
-            await self.producer.stop()
-
-    def is_ready(self):
-        return self.consumer is not None or self.producer is not None
+    logger.info("shutdown")

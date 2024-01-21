@@ -12,8 +12,11 @@ print(src_folder)
 sys.path.append(src_folder)
 
 import asyncio
-from AioKafkaEngine.AioKafkaEngine import AioKafkaEngine
+
 import pytest
+
+from AioKafkaEngine.AioKafkaEngine import AioKafkaEngine
+
 
 @pytest.mark.asyncio
 async def test_main():
@@ -29,24 +32,19 @@ async def test_main():
     await engine.start_consumer(group_id=group_id)
     print("start_producer")
     await engine.start_producer()
-    
-    await asyncio.gather(*[
-        engine.produce_messages(),
-        engine.consume_messages()
-    ])
+
+    await asyncio.gather(*[engine.produce_messages(), engine.consume_messages()])
 
     print("put msg")
     await engine.send_queue.put(input_msg)
-    
+
     print("get_msg")
     msg = await engine.receive_queue.get()
 
     assert msg == input_msg
 
-    await asyncio.gather(*[
-        engine.stop_consumer(),
-        engine.stop_producer()
-    ])
+    await asyncio.gather(*[engine.stop_consumer(), engine.stop_producer()])
+
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
