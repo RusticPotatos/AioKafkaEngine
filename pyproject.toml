@@ -18,5 +18,5 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/RusticPotatos/AioKafkaEngine-test"
-"Bug Tracker" = "https://github.com/RusticPotatos/AioKafkaEngine-test/issues"
+"Homepage" = "https://github.com/RusticPotatos/PotatosAioKafkaEngine"
+"Bug Tracker" = "https://github.com/RusticPotatos/PotatosAioKafkaEngine/issues"
