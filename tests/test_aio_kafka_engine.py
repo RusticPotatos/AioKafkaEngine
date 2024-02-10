@@ -15,7 +15,7 @@ import asyncio
 
 import pytest
 
-from AioKafkaEngine.AioKafkaEngine import AioKafkaEngine
+from PotatosAioKafkaEngine.AioKafkaEngine import AioKafkaEngine
 
 
 @pytest.mark.asyncio
