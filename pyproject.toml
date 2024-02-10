@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "AioKafkaEngine-test"
-version = "0.0.2"
+name = "PotatosAioKafkaEngine"
+version = "0.0.1"
 authors = [
   { name="RusticPotatos", email="author@example.com" },
 ]
